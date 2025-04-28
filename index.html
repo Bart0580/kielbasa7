@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Side-Scrolling Shooter</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: black; position: relative; }
+    #orientationMessage {
+      position: fixed; top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.8);
+      color: white; font-size: 24px;
+      display: none; align-items: center; justify-content: center;
+      text-align: center; z-index: 1000;
+    }
+    #ui {
+      position: absolute; top: 10px; left: 10px;
+      color: white; font-size: 24px; z-index: 500;
+      pointer-events: none; transform-origin: 0 0;
+    }
+    #controls {
+      position: absolute; top: 50%; left: 0;
+      transform-origin: 0 0;
+      display: grid;
+      grid-template-columns: repeat(3, 40px);
+      grid-template-rows: repeat(3, 40px);
+      gap: 5px;
+      z-index: 600;
+      pointer-events: auto;
+    }
+    #controls button {
+      width: 40px; height: 40px;
+      font-size: 18px; opacity: 0.7;
+      background: gray; color: white; border: none;
+    }
+    canvas {
+      position: absolute;
+      top: 0; /* will be set dynamically */
+      left: 0; /* will be set dynamically */
+      touch-action: none;
+    }
+    button.ui { pointer-events: auto; font-size: 24px; opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <div id="orientationMessage">세로 화면 감지됨<br>가로 화면으로 바꿔서 플레이해주세요</div>
+  <canvas id="gameCanvas"></canvas>
+  <div id="ui">
+    <span>생명: <b id="lives">2</b></span>
+    <span>에너지: <b id="energy">5</b></span>
+    <span>점수: <b id="score">0</b></span>
+    <span>스테이지: <b id="stage">1</b></span>
+    <button id="pauseBtn" class="ui">일시정지</button>
+    <button id="bgmBtn" class="ui">BGM On</button>
+  </div>
+  <div id="controls">
+    <button data-dir="ArrowUpArrowLeft">↖</button>
+    <button data-dir="ArrowUp">↑</button>
+    <button data-dir="ArrowUpArrowRight">↗</button>
+    <button data-dir="ArrowLeft">←</button>
+    <div></div>
+    <button data-dir="ArrowRight">→</button>
+    <button data-dir="ArrowDownArrowLeft">↙</button>
+    <button data-dir="ArrowDown">↓</button>
+    <button data-dir="ArrowDownArrowRight">↘</button>
+  </div>
+
+  <script>
+    // Audio
+    const shootSound = new Audio('Game Shoot.wav'); shootSound.volume = 0.5;
+    const bgm = new Audio('LOOP.mp3'); bgm.loop = true; bgm.volume = 0.3;
+    let lastShot = 0;
+
+    // Canvas & Resize
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const DESIGN_W = 1280, DESIGN_H = 720;
+    let scale=1, offsetX=0, offsetY=0;
+    function resize() {
+      const vw=window.innerWidth, vh=window.innerHeight, ar=DESIGN_W/DESIGN_H;
+      let cw, ch;
+      if(vw/vh>ar){ ch=vh; cw=ch*ar; } else { cw=vw; ch=cw/ar; }
+      scale=cw/DESIGN_W; offsetX=(vw-cw)/2; offsetY=(vh-ch)/2;
+      canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+      canvas.style.left = offsetX+'px'; canvas.style.top = offsetY+'px';
+      canvas.width=DESIGN_W; canvas.height=DESIGN_H;
+      document.getElementById('ui').style.transform =
+        `translate(${offsetX}px,${offsetY}px) scale(${scale})`;
+      document.getElementById('controls').style.transform =
+        `translate(${offsetX}px,${offsetY+'px'}) scale(${scale})`;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Orientation
+    const oriMsg=document.getElementById('orientationMessage');
+    function checkOri(){
+      if(window.innerHeight>window.innerWidth){ oriMsg.style.display='flex'; return false; }
+      oriMsg.style.display='none'; return true;
+    }
+
+    // Input state
+    const keys={};
+
+    // Game constants
+    const PLAYER_SPEED=5, BULLET_SPEED=4;
+    const ENEMY_SPEED=2, ENEMY_BULLET_SPEED=4;
+    const ITEM_SPEED=2, INITIAL_ENERGY=5;
+    const BG_SCROLL=1, MAX_STAGE=10;
+    const AUTO_SHOOT_INT=20;
+
+    // Game state
+    let player, enemies=[], pBullets=[], eBullets=[], items=[];
+    let lives=2, energy=INITIAL_ENERGY, score=0, stage=1, itemCount=0;
+    let backgroundX=0;
+
+    // Assets
+    const imgs={};
+    ['protagonist','enemy1','enemy2','item1','item2','background'].forEach(id=>{
+      imgs[id]=new Image(); imgs[id].src=id+'.png';
+    });
+
+    // Player
+    class Player{
+      constructor(){ this.img=imgs.protagonist; this.w=80; this.h=80;
+        this.x=DESIGN_W*0.1; this.y=DESIGN_H/2-this.h/2;
+      }
+      update(){
+        if(keys.ArrowUp) this.y=Math.max(0,this.y-PLAYER_SPEED);
+        if(keys.ArrowDown) this.y=Math.min(DESIGN_H-this.h,this.y+PLAYER_SPEED);
+        if(keys.ArrowLeft) this.x=Math.max(0,this.x-PLAYER_SPEED);
+        if(keys.ArrowRight)this.x=Math.min(DESIGN_W-this.w,this.x+PLAYER_SPEED);
+      }
+      draw(){ if(this.img.complete) ctx.drawImage(this.img,this.x,this.y,this.w,this.h); }
+      shoot(){ const now=Date.now(); if(now-lastShot<200) return; lastShot=now;
+        shootSound.currentTime=0; shootSound.play().catch(()=>{});
+        pBullets.push({ x:this.x+this.w, y:this.y+this.h/2, dx:BULLET_SPEED*(1+itemCount), dy:0 });
+      }
+    }
+    // Enemy and Item classes (same as above)
+    class Enemy{constructor(){this.img=Math.random()<0.5?imgs.enemy1:imgs.enemy2;this.w=80;this.h=80;this.health=this.img===imgs.enemy1?2:5;this.x=DESIGN_W;this.y=Math.random()*(DESIGN_H-this.h);this.timer=0;}update(){this.x-=ENEMY_SPEED;this.timer++;if(this.timer>AUTO_SHOOT_INT*4-(stage-1)*2){eBullets.push({x:this.x,y:this.y+this.h/2,dx:-ENEMY_BULLET_SPEED,dy:0});this.timer=0;}}draw(){if(this.img.complete)ctx.drawImage(this.img,this.x,this.y,this.w,this.h);}}
+    class Item{constructor(){this.type=Math.random()<0.5?'item1':'item2';this.img=imgs[this.type];this.w=48;this.h=48;this.x=DESIGN_W;this.y=Math.random()*(DESIGN_H-this.h);}update(){this.x-=ITEM_SPEED;}draw(){if(this.img.complete)ctx.drawImage(this.img,this.x,this.y,this.w,this.h);}}
+
+    function isCollide(a,b){return a.x<b.x+b.w && a.x+6>b.x && a.y<b.y+b.h && a.y+6>b.y;}
+    function updateUI(){document.getElementById('lives').textContent=lives;document.getElementById('energy').textContent=energy;document.getElementById('score').textContent=score;document.getElementById('stage').textContent=stage;}
+
+    // Keyboard
+    ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].forEach(k=>{window.addEventListener('keydown',e=>{if(e.key===k)keys[k]=true;});window.addEventListener('keyup',e=>{if(e.key===k)keys[k]=false;});});
+
+    // Touch drag/shoot
+    let dragging=false, txOff=0, tyOff=0;
+    canvas.addEventListener('touchstart',e=>{e.preventDefault();[...e.touches].forEach(t=>{const tx=t.clientX*(DESIGN_W/canvas.clientWidth),ty=t.clientY*(DESIGN_H/canvas.clientHeight);if(tx>DESIGN_W/2)player.shoot();else if(tx>=player.x&&tx<=player.x+player.w&&ty>=player.y&&ty<=player.y+player.h){dragging=true;txOff=tx-player.x;tyOff=ty-player.y;}});},{passive:false});
+    canvas.addEventListener('touchmove',e=>{e.preventDefault();if(!dragging)return;const t=e.touches[0],tx=t.clientX*(DESIGN_W/canvas.clientWidth),ty=t.clientY*(DESIGN_H/canvas.clientHeight);player.x=Math.max(0,Math.min(DESIGN_W-player.w,tx-txOff));player.y=Math.max(0,Math.min(DESIGN_H-player.h,ty-tyOff));},{passive:false});
+    canvas.addEventListener('touchend',e=>{dragging=false;},{passive:false});
+
+    // Control buttons
+    document.getElementById('controls').querySelectorAll('button[data-dir]').forEach(btn=>{
+      const dirs=btn.dataset.dir.match(/ArrowUp|ArrowDown|ArrowLeft|ArrowRight/g)||[];
+      btn.addEventListener('touchstart',e=>{e.preventDefault();dirs.forEach(d=>keys[d]=true);});
+      btn.addEventListener('touchend',e=>{e.preventDefault();dirs.forEach(d=>keys[d]=false);});
+    });
+
+    // Init & Loop
+    let paused=false;
+    function init(){player=new Player();document.getElementById('pauseBtn').addEventListener('click',()=>{paused=!paused;document.getElementById('pauseBtn').textContent=paused?'재개':'일시정지';});document.getElementById('bgmBtn').addEventListener('click',function(){if(bgm.paused){bgm.play().catch(()=>{});this.textContent='BGM Off';}else{bgm.pause();this.textContent='BGM On';}});requestAnimationFrame(loop);}    
+    function loop(){
+      requestAnimationFrame(loop);
+      if(!checkOri()) return;
+      if(paused) return;
+      // bg
+      if(imgs.background.complete){backgroundX-=BG_SCROLL;if(backgroundX<=-DESIGN_W)backgroundX=0;ctx.drawImage(imgs.background,backgroundX,0,DESIGN_W,DESIGN_H);ctx.drawImage(imgs.background,backgroundX+DESIGN_W,0,DESIGN_W,DESIGN_H);}      
+      // spawn
+      if(Math.random()<0.002+(stage-1)*0.0005)enemies.push(new Enemy());
+      if(Math.random()<0.001)items.push(new Item());
+      // update/draw
+      player.update();player.draw();
+      ctx.fillStyle='white';pBullets.forEach((b,i)=>{b.x+=b.dx;b.y+=b.dy;ctx.fillRect(b.x,b.y,6,6);if(b.x>DESIGN_W||b.y<0||b.y>DESIGN_H)pBullets.splice(i,1);});
+      ctx.fillStyle='red';eBullets.forEach((b,i)=>{b.x+=b.dx;b.y+=b.dy;ctx.fillRect(b.x,b.y,6,6);if(b.x+6<0)eBullets.splice(i,1);});
+      enemies.forEach((e,i)=>{e.update();e.draw();if(e.x+e.w<0)enemies.splice(i,1);});
+      items.forEach((it,i)=>{it.update();it.draw();if(it.x+it.w<0)items.splice(i,1);});
+      // collisions
+      pBullets.forEach((b,bi)=>enemies.forEach((e,ei)=>{if(isCollide(b,e)){e.health--;pBullets.splice(bi,1);if(e.health<=0){score+=(e.img===imgs.enemy1?2:5);updateUI();enemies.splice(ei,1);}}}));
+      eBullets.forEach((b,bi)=>{if(isCollide(b,player)){eBullets.splice(bi,1);energy--;updateUI();if(energy<=0){lives--;updateUI();if(lives>0){energy=INITIAL_ENERGY;itemCount=0;player=new Player();}else{alert('Game Over');location.reload();}}}});
+      items.forEach((it,ii)=>{if(isCollide(it,player)){if(it.type==='item1'&&itemCount<2){itemCount++;}else if(it.type==='item2'){energy=Math.min(energy+1,INITIAL_ENERGY);updateUI();}items.splice(ii,1);}});
+      if(score>=50*stage){lives++;stage++;updateUI();}
+      updateUI();
+    }
+    init();
+  </script>
+</body>
+</html>
